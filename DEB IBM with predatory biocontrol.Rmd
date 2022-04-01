@@ -23,15 +23,13 @@ Simulations to examine the effects of predatory density/attack rate, size-select
 * Infection-selective predation (3/30/22)
   + Implemented check for patently shedding snails and patently shedding snails are attacked at relative rate "pred_alpha_Inf"
 * cumulative_totals() function that retains cumulative totals and parameter values
+* Implemented a "simulation space" function to run factorial simulation experiments over (4/1/2022)
+  + DEBIBM_factorial_simulator() function makes
 
 ### Bug fixes/issues resolved
 * High predation scenarios revealed a bookkeeping problem when only 1 snail is alive (transposing snail.stat matrix)
   + Fixed this issue by enforcing correct structure with an internal check when there is only one snail (3/1/2022)
 * The Initialize_IBM() function now stores the parameters used in the simulation (3/1/2022)
-
-### Features to add
-* Ideally a "simulation space" like Netlogo's behavior space, really just a way to coordinate lots of simulations
-
 
 
 ```{r packages}
@@ -65,35 +63,35 @@ dyn.load("C:/RData/IndividualModel_IBM3.dll") # Load dll
 ```{r parameters}
 
 # DEB Parameter estimates current as of Civitello et al. 2020 Proc B (Highest posterior density parameters)
-pars = readRDS("C:/RData/Starvation_parameters.RDa")[1:25]
+parms = readRDS("C:/RData/Starvation_parameters.RDa")[1:25]
 
 # Adds parameters for the environment, resource production model, and transmission model
-pars["Fh"] = 2 # f_scaled (for v.1.1)
-pars["ENV"] = 500 # Units: L
-pars["r"] = 0.25   # Units: day-1
-pars["step"] = 1  # Units: day
-pars["epsilon"] = 20 # Units: L host-1, day-1 (Rounded estimate from Civitello and Rohr)
-pars["sigma"] = 0.5 # Units: - (Rounded estimate from Civitello and Rohr)
-pars["m_M"] = 1   # Units: day-1
-pars["m_Z"] = 1   # Units: day-1
-pars["M_in"] = 10 # Units: day-1
-pars["K"] = 5
-pars["Det"] = 0 # Units mg C L-1 d-1 (detritus)
-pars["DV"] = 0.0096 # Units: mg dry mass mm^-3 (Empirical weight - length regression; note not units of carbon)
+parms["Fh"] = 2 # f_scaled (for v.1.1)
+parms["ENV"] = 500 # Units: L
+parms["r"] = 0.25   # Units: day-1
+parms["step"] = 1  # Units: day
+parms["epsilon"] = 20 # Units: L host-1, day-1 (Rounded estimate from Civitello and Rohr)
+parms["sigma"] = 0.5 # Units: - (Rounded estimate from Civitello and Rohr)
+parms["m_M"] = 1   # Units: day-1
+parms["m_Z"] = 1   # Units: day-1
+parms["M_in"] = 10 # Units: day-1
+parms["K"] = 5
+parms["Det"] = 0 # Units mg C L-1 d-1 (detritus)
+parms["DV"] = 0.0096 # Units: mg dry mass mm^-3 (Empirical weight - length regression; note not units of carbon)
 # This correction factor is explained in supplement of Civitello et al. 2020 Proc B, based on repeated 2 vs 22 hour sheds by RBH
-pars["yRP"] = pars["yRP"]*17.5 # new yRP = 0.824 * 17.5 (1-8-19)( # old yRP = 0.0471 * (1/0.4) * 7 [expected shedding output per weekly shed * (snails shed 40% of their total cercariae during 9-11 AM.) * 7 days] 
-pars["hb"] = 0.001
-pars["Hatch"] = 0.5
+parms["yRP"] = parms["yRP"]*17.5 # new yRP = 0.824 * 17.5 (1-8-19)( # old yRP = 0.0471 * (1/0.4) * 7 [expected shedding output per weekly shed * (snails shed 40% of their total cercariae during 9-11 AM.) * 7 days] 
+parms["hb"] = 0.001
+parms["Hatch"] = 0.5
 
 # Adds parameters for predation
-pars["pred_N"] = 0 # predator abundance
-pars["pred_a"] = 0.1 # predator attack rate: 50L swept / day or 8.33 * 6 L tanks (from sokolow etal 2014 acta tropica)
-pars["pred_h"] = 0.1 # pred handling time # 0.1 = 10 snails per day
-pars["pred_window"] = TRUE # Is size selective predation defined by a vulnerable window (FALSE = continuous size selectivity)
-pars["gape_min"] = 0 # minimum size that can be consumed by predator
-pars["gape_max"] = 100 #maximum size that can be consumed by predator
-pars["pred_size_gradient"] = -0.237 # continuous size-selectivity effect (parameterized by Sokolow et al. 2014 acta tropica)
-pars["pred_alpha_Inf"] = 2 # Predator preference to attack infected individuals, must be non-negative (1 = no preference)
+parms["pred_N"] = 0 # predator abundance
+parms["pred_a"] = 0.1 # predator attack rate: 50L swept / day or 8.33 * 6 L tanks (from sokolow etal 2014 acta tropica)
+parms["pred_h"] = 0.1 # pred handling time # 0.1 = 10 snails per day
+parms["pred_window"] = TRUE # Is size selective predation defined by a vulnerable window (FALSE = continuous size selectivity)
+parms["gape_min"] = 0 # minimum size that can be consumed by predator
+parms["gape_max"] = 100 #maximum size that can be consumed by predator
+parms["pred_size_gradient"] = -0.237 # continuous size-selectivity effect (parameterized by Sokolow et al. 2014 acta tropica)
+parms["pred_alpha_Inf"] = 2 # Predator preference to attack infected individuals, must be non-negative (1 = no preference)
 ```
 
 ```{r DEB_function}
@@ -145,23 +143,23 @@ Infection = function(snail.stats, miracidia, parameters){
 
 ```{r initialize_IBM}
 
-Initialize_IBM = function(N.snail, min.L, max.L, Food, parameters=pars){
+Initialize_IBM = function(N.snail, min.L, max.L, Food, pars=parms){
   L = runif(N.snail, min = min.L, max = max.L)
   e = rep(0.9, times=N.snail)
   snail.stats = cbind("ID" = 1:N.snail, "L" = L, "e" = e, "D" = rep(0, times=N.snail), "RH" = rep(0, times=N.snail),
                       "P" = rep(0, times=N.snail), "RP" = rep(0, times=N.snail), "DAM" = rep(0, times=N.snail),
                       "HAZ" = rep(0, times=N.snail), "LG" = L, "DEBmass" = pars["M"]*((1 + e*pars["EM"])/(1 + pars["EM"]))*L^3, 
                       "Appmass" = pars["DV"]*L^3, "repro" = rep(0, times=N.snail), "Cercs" = rep(0, times=N.snail), "t" = rep(0, times=N.snail))
-  list("Snails" = list(snail.stats), "Env_F" = Food, "Env_M" = 0, "Env_Z" = 0, "Env_G" = 0, "Parameters" = parameters)
+  list("Snails" = list(snail.stats), "Env_F" = Food, "Env_M" = 0, "Env_Z" = 0, "Env_G" = 0, "Parameters" = pars)
 }
 ```
 
 ```{r simulate_IBM}
 
-run_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, n.ticks=112, drip=T){
+run_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, n.ticks=112, drip=T, pars=parms){
   
   # Set up initial conditions, data structures
-  state = Initialize_IBM(N.snail,min.L, max.L, Food)
+  state = Initialize_IBM(N.snail,min.L, max.L, Food, pars)
   Env_G = numeric()
   snail.IDs = length(state$Snails[[1]][,"ID"])
   
@@ -327,13 +325,57 @@ digest_i_states = function(state){
   inf_inds
 }
 
-# Compute 
+# Compute cumulative totals for simulations over parameter gradients
 cumulative_totals = function(state){
   c(colSums(digest_state(state)), state$Parameters)
 }
 cumulative_totals(state)
 
 ```
+
+
+```{r fac_sim}
+
+# A function suitable for replicate() to handle and return the cumulative total summarized output
+cumulative_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, n.ticks=112, drip=T, pars){
+  cumulative_totals(run_DEB_IBM(N.snail, min.L, max.L, Food, n.ticks, drip, pars))
+}
+
+
+Outputs_of_Interest = c("Snails", "DEBmass", "Appmass", "Food", "Miracidia", "Cercariae", "Eggs")
+Parameters_of_Interest = names(parms)[c(38,43)]
+
+
+
+DEBIBM_factorial_simulator = function(OoI, PoI, mins, maxs, levels, iterations, pars=parms){ # Factorial simulator for cumulative totals
+  # set up parameter combinations
+  PoI_df = data.frame(matrix(ncol=length(PoI), nrow=levels)) # create an empty dataframe
+  colnames(PoI_df) = PoI
+  for(i in 1:length(PoI)){
+    PoI_df[,i] = seq(mins[i], maxs[i], length.out = levels)
+  }
+  PoI_set = expand.grid(PoI_df) # creates all factorial combinations ## Note, some may be infeasible
+
+  # run first parameter combination batch
+  pars[PoI] = as.numeric(PoI_set[1,])
+  reps = data.frame(t(replicate(n=iterations, cumulative_DEB_IBM(drip=T, pars=pars), simplify=T)))
+  
+  # add sims for other parameter combinations 
+  for( i in 2:dim(PoI_set)[1]){
+    pars[PoI] = as.numeric(PoI_set[i,])
+    add_reps = data.frame(t(replicate(n=iterations, cumulative_DEB_IBM(drip=T, pars=pars), simplify=T)))
+    reps = rbind(reps, add_reps)
+  }
+  # returns back just the Outputs of interest, but sends back all pars for safety
+  subset(reps, select=c(OoI, PoI)) 
+  
+}
+
+facsim_result = DEBIBM_factorial_simulator(OoI=Outputs_of_Interest, PoI=Parameters_of_Interest, mins = c(0,0), maxs = c(5,50), levels = 5, iterations=10)
+
+```
+
+
 
 ```{r replicate_sims, message=FALSE, echo=FALSE}
 # A function suitable for replicate() to handle and return the pop-level summarized output
@@ -434,6 +476,12 @@ FigS1
 #save_plot("FigS1_IBM.png", FigS1, ncol=2, nrow=2, base_height=4, base_aspect_ratio = 1.1, dpi=600, units="in")
 
 ```
+
+
+
+
+
+
 
 ```{r}
 
