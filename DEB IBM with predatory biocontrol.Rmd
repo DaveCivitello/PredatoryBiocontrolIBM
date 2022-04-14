@@ -25,6 +25,7 @@ Simulations to examine the effects of predatory density/attack rate, size-select
 * cumulative_totals() function that retains cumulative totals and parameter values
 * Implemented a "simulation space" function to run factorial simulation experiments over (4/1/2022)
   + DEBIBM_factorial_simulator() function makes
+* Implemented prawn grow-out model from Hoover et al. 2019, Nature Sustainability (4/13/2022)
 
 ### Bug fixes/issues resolved
 * High predation scenarios revealed a bookkeeping problem when only 1 snail is alive (transposing snail.stat matrix)
@@ -82,16 +83,30 @@ parms["DV"] = 0.0096 # Units: mg dry mass mm^-3 (Empirical weight - length regre
 parms["yRP"] = parms["yRP"]*17.5 # new yRP = 0.824 * 17.5 (1-8-19)( # old yRP = 0.0471 * (1/0.4) * 7 [expected shedding output per weekly shed * (snails shed 40% of their total cercariae during 9-11 AM.) * 7 days] 
 parms["hb"] = 0.001
 parms["Hatch"] = 0.5
+parms["timespan"] = 150
+
+# Adds parameters for a generalist (growing) biocontrol predator
+parms["grow_out"] = TRUE
+parms["L0"] = 40
+parms["Linf"] = 213.63
+parms["kmax"] = 0.371/30 #3.19/365
+parms["gamma"] = 5e-6
+parms["ap"] = -2.6132
+parms["bp"] = 3.5502
+parms["mup"] = 2.21/365
+parms["d"] = -0.382
+parms["omega"] = 5.5e-9
+
 
 # Adds parameters for predation
-parms["pred_N"] = 0 # predator abundance
-parms["pred_a"] = 0.1 # predator attack rate: 50L swept / day or 8.33 * 6 L tanks (from sokolow etal 2014 acta tropica)
+parms["pred_N"] = 2.5 # predator abundance (so predator density = pred_N/ENV = #/L)
+parms["pred_a"] = 50/parms["ENV"] # predator attack rate; Units = ENVs swept per day, est = 50L swept / day or 8.33 * 6 L tanks (from sokolow etal 2014 acta tropica)
 parms["pred_h"] = 0.1 # pred handling time # 0.1 = 10 snails per day
 parms["pred_window"] = TRUE # Is size selective predation defined by a vulnerable window (FALSE = continuous size selectivity)
 parms["gape_min"] = 0 # minimum size that can be consumed by predator
-parms["gape_max"] = 100 #maximum size that can be consumed by predator
+parms["gape_max"] = 1/(3*5) #maximum biomass ratio that can be consumed by predator (from Sokolow et al. 2014, acta tropica and converting our dry-mass estimate to their wet mass estimate ~5-fold diff)
 parms["pred_size_gradient"] = -0.237 # continuous size-selectivity effect (parameterized by Sokolow et al. 2014 acta tropica)
-parms["pred_alpha_Inf"] = 2 # Predator preference to attack infected individuals, must be non-negative (1 = no preference)
+parms["pred_alpha_Inf"] = 1 # Predator preference to attack infected individuals, must be >= -1 (0 = no preference)
 ```
 
 ```{r DEB_function}
@@ -141,6 +156,29 @@ Infection = function(snail.stats, miracidia, parameters){
 }
 ```
 
+```{r generalist_predator_dynamic}
+gen_pred_dynamic =function(t, y, parameters) { 
+  L=y[1]; P=y[2]
+  with(as.list(parameters),{ 
+    B = 10^(ap)*(L/10)^bp # Converts prawn length from mm->cm-> g
+    OMEGA = B*P
+    kstar = kmax/(1 + gamma*OMEGA)
+    dLdt = kstar*(Linf - L)
+    dPdt = -P*(mup*B^d + omega*OMEGA)
+    result = c(dLdt,dPdt)          # The function for simulation expects us to store the result this way
+    return(list(result))
+  }
+  ) 
+} 
+
+library(deSolve)
+
+pred_growth = lsoda(y = c(L = 40, P = 2.5), times = 1:parms["timespan"], func=gen_pred_dynamic, parms = parms)
+
+plot(pred_growth)
+```
+
+
 ```{r initialize_IBM}
 
 Initialize_IBM = function(N.snail, min.L, max.L, Food, pars=parms){
@@ -150,21 +188,34 @@ Initialize_IBM = function(N.snail, min.L, max.L, Food, pars=parms){
                       "P" = rep(0, times=N.snail), "RP" = rep(0, times=N.snail), "DAM" = rep(0, times=N.snail),
                       "HAZ" = rep(0, times=N.snail), "LG" = L, "DEBmass" = pars["M"]*((1 + e*pars["EM"])/(1 + pars["EM"]))*L^3, 
                       "Appmass" = pars["DV"]*L^3, "repro" = rep(0, times=N.snail), "Cercs" = rep(0, times=N.snail), "t" = rep(0, times=N.snail))
-  list("Snails" = list(snail.stats), "Env_F" = Food, "Env_M" = 0, "Env_Z" = 0, "Env_G" = 0, "Parameters" = pars)
+  list("Snails" = list(snail.stats), "Env_F" = Food, "Env_M" = 0, "Env_Z" = 0, "Env_G" = 0, "Pred_L" = 0, "Pred_N" = 0, "Parameters" = pars)
 }
 ```
 
 ```{r simulate_IBM}
 
-run_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, n.ticks=112, drip=T, pars=parms){
+run_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, drip=T, pars){
   
   # Set up initial conditions, data structures
   state = Initialize_IBM(N.snail,min.L, max.L, Food, pars)
   Env_G = numeric()
   snail.IDs = length(state$Snails[[1]][,"ID"])
   
+  # Set up predators and/or grow-out
+  if(pars["grow_out"] == TRUE){
+    #can run the whole thing at beginning because no feedbacks from snails (assumption of generalism)
+    pred_growth = lsoda(y = c(L = as.numeric(pars["L0"]), P = as.numeric(pars["pred_N"])), times = 0:pars["timespan"], 
+                        func=gen_pred_dynamic, parms = pars)
+    state$Pred_L = pred_growth[,"L"]
+    state$Pred_N = pred_growth[,"P"]
+  }else{ # If grow-out does not occur, then keep predator size and density constant
+    state$Pred_L = rep(as.numeric(pars["L0"]), times=pars["timespan"]+1) # Lines up to dataframe, which is timespan + 1 long
+    state$Pred_N = rep(as.numeric(pars["pred_N"]), times=pars["timespan"]+1) # Lines up to dataframe, which is timespan + 1 long
+  }
+  
+
   # run the IBM
-  for(tick in 1:n.ticks){
+  for(tick in 1:pars["timespan"]){
     #Daily check for time-varying parameters
     if(drip == F){pars["M_in"] = ifelse( tick %in% c(1, 15, 29, 43), 140, 0)}
     
@@ -186,11 +237,19 @@ run_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, n.ticks=112, drip=
       snail.stats[which(Infection.step[1:N.snails] > 0),"P"] = snail.stats[which(Infection.step[1:N.snails] > 0),"P"] + 2.85e-5 
       
       # Determine snail mortality rates due to size- and infection-selective predation
+        # Calculate average biomass of predators
+          pred_M = 10^(pars["ap"])*(state$Pred_L[tick]/10)^pars["bp"]
       if(pars["pred_window"] == TRUE){
-        hb = as.numeric(pars["hb"]) + (pars["pred_a"]*(1 + (snail.stats[,"Cercs"]>0)*pars["pred_alpha_Inf"]) * pars["pred_N"]) / (1 + pars["pred_a"] * pars["pred_h"] * Uninf.snails + pars["pred_a"] *(1 + pars["pred_alpha_Inf"]) * pars["pred_h"] * Inf.snails) * 
-                                        (snail.stats[,"LG"] >= pars["gape_min"] & snail.stats[,"LG"] <= pars["gape_max"])
+         hb = as.numeric(pars["hb"]) + (pars["pred_a"]*(1 + (snail.stats[,"Cercs"]>0)*pars["pred_alpha_Inf"])*state$Pred_N[tick]) / 
+                                  (1 + pars["pred_a"] * pars["pred_h"] * Uninf.snails + 
+                                     pars["pred_a"]*(1 + pars["pred_alpha_Inf"]) * pars["pred_h"] * Inf.snails) *
+                            (snail.stats[,"Appmass"] >= pars["gape_min"]*pred_M & # is the snail "in the window"
+                                snail.stats[,"Appmass"] <= pars["gape_max"]*pred_M)
+
+        # hb = as.numeric(pars["hb"]) + (pars["pred_a"]*(1 + (snail.stats[,"Cercs"]>0)*pars["pred_alpha_Inf"]) * state$Pred_N[tick]) / (1 + pars["pred_a"] * pars["pred_h"] * Uninf.snails + pars["pred_a"] *(1 + pars["pred_alpha_Inf"]) * pars["pred_h"] * Inf.snails) * 
+        #                                 (snail.stats[,"LG"] >= pars["gape_min"] & snail.stats[,"LG"] <= pars["gape_max"])
       }else{
-        hb = as.numeric(pars["hb"]) + (pars["pred_a"]*(1 + (snail.stats[,"Cercs"]>0)*pars["pred_alpha_Inf"]) * pars["pred_N"]) / (1 + pars["pred_a"] * pars["pred_h"] * Uninf.snails + pars["pred_a"] *(1 + pars["pred_alpha_Inf"]) * pars["pred_h"] * Inf.snails) * 
+        hb = as.numeric(pars["hb"]) + (pars["pred_a"]*(1 + (snail.stats[,"Cercs"]>0)*pars["pred_alpha_Inf"]) * state$Pred_N[tick]) / (1 + pars["pred_a"] * pars["pred_h"] * Uninf.snails + pars["pred_a"]*(1 + pars["pred_alpha_Inf"]) * pars["pred_h"] * Inf.snails) * 
           exp( -pars["pred_size_gradient"] * snail.stats[,"LG"])
       }
                 
@@ -292,7 +351,7 @@ run_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, n.ticks=112, drip=
 
 ```
 
-```{r catch}
+```{r catch_and_digest}
 # functions for simulating that observation of snail populations fails to catch small individuals (e.g., in GH we exclude <2 mm)
 catch_snails = function(mat, LG = 2){
   mat[which(mat[,"LG"] >= LG),]
@@ -303,11 +362,6 @@ catch_state = function(state){
   list("Snails" = caught_snails, "Env_F" = state$Env_F, "Env_M" = state$Env_M, "Env_Z" = state$Env_Z, "Env_G" = state$Env_G)
 }
 
-state = run_DEB_IBM()
-caught_state = catch_state(state)
-```
-
-```{r digest}
 # Obtain key population-level summary statistics from an IBM run
 digest_state = function(state){
   span = length(state$Env_F)
@@ -315,7 +369,8 @@ digest_state = function(state){
   DEBmass = matrix(unlist(lapply(state$Snails, FUN=colSums)), ncol=dim(state$Snails[[1]])[2], byrow=T)[, which(colnames(state$Snails[[1]]) == "DEBmass")]
   Appmass = matrix(unlist(lapply(state$Snails, FUN=colSums)), ncol=dim(state$Snails[[1]])[2], byrow=T)[, which(colnames(state$Snails[[1]]) == "Appmass")]
   data.frame("time" = 1:span, "Snails" = N.snails, "DEBmass" = DEBmass, "Appmass" = Appmass, "Food" = state$Env_F,
-             "Miracidia" = state$Env_M, "Cercariae" = state$Env_Z, "Eggs" = state$Env_G)
+             "Miracidia" = state$Env_M, "Cercariae" = state$Env_Z, "Eggs" = state$Env_G, "Pred_L" = state$Pred_L, 
+             "Pred_N" = state$Pred_N)
 }
 
 # Obtain information on all patently shedding individuals
@@ -329,21 +384,24 @@ digest_i_states = function(state){
 cumulative_totals = function(state){
   c(colSums(digest_state(state)), state$Parameters)
 }
-cumulative_totals(state)
+#cumulative_totals(state)
 
+state = run_DEB_IBM(pars=parms)
+try(cumulative_totals(state))
+caught_state = catch_state(state)
 ```
-
 
 ```{r fac_sim}
 
 # A function suitable for replicate() to handle and return the cumulative total summarized output
-cumulative_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, n.ticks=112, drip=T, pars){
-  cumulative_totals(run_DEB_IBM(N.snail, min.L, max.L, Food, n.ticks, drip, pars))
+# Note: This function has defaults for initialization
+cumulative_DEB_IBM = function(N.snail=50, min.L=4, max.L=16, Food=1, drip=T, pars){
+  cumulative_totals(run_DEB_IBM(N.snail, min.L, max.L, Food, drip, pars))
 }
 
 
-Outputs_of_Interest = c("Snails", "DEBmass", "Appmass", "Food", "Miracidia", "Cercariae", "Eggs")
-Parameters_of_Interest = names(parms)[c(38,43)]
+Outputs_of_Interest = c("Snails", "DEBmass", "Appmass", "Food", "Miracidia", "Cercariae", "Eggs", "Pred_L", "Pred_N")
+Parameters_of_Interest = c("pred_N", "L0")
 
 
 
@@ -363,15 +421,27 @@ DEBIBM_factorial_simulator = function(OoI, PoI, mins, maxs, levels, iterations, 
   # add sims for other parameter combinations 
   for( i in 2:dim(PoI_set)[1]){
     pars[PoI] = as.numeric(PoI_set[i,])
+    #print(pars)
     add_reps = data.frame(t(replicate(n=iterations, cumulative_DEB_IBM(drip=T, pars=pars), simplify=T)))
     reps = rbind(reps, add_reps)
   }
-  # returns back just the Outputs of interest, but sends back all pars for safety
+  # returns back just the Outputs and Parameters of interest ## could be changed to send back all pars for safety
   subset(reps, select=c(OoI, PoI)) 
   
 }
 
-facsim_result = DEBIBM_factorial_simulator(OoI=Outputs_of_Interest, PoI=Parameters_of_Interest, mins = c(0,0), maxs = c(5,50), levels = 5, iterations=10)
+facsim_result = DEBIBM_factorial_simulator(OoI=Outputs_of_Interest, PoI=Parameters_of_Interest, mins = c(0, 40), maxs = c(10, 200), levels = 10, iterations=4)
+
+facsim_Summary = aggregate(Cercariae ~ pred_N*L0, FUN=mean, data=facsim_result)
+ 
+ggplot(data=facsim_Summary, aes(x=pred_N, y=Cercariae, group=as.factor(L0), color=as.factor(L0))) + geom_point() + geom_line()
+# 
+# facsim_Summary2 = aggregate(DEBmass ~ pred_N, FUN=mean, data=facsim_result)
+# 
+# ggplot(data=facsim_Summary2, aes(x=pred_N, y=DEBmass)) + geom_point() 
+
+
+#ggplot(data=facsim_Summary, aes(x=pred_N, y=Cercariae, color=as.factor(gape_max), group=as.factor(gape_max))) + geom_point() 
 
 ```
 
@@ -379,8 +449,8 @@ facsim_result = DEBIBM_factorial_simulator(OoI=Outputs_of_Interest, PoI=Paramete
 
 ```{r replicate_sims, message=FALSE, echo=FALSE}
 # A function suitable for replicate() to handle and return the pop-level summarized output
-summarized_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, n.ticks=112, drip=T){
-  digest_state(run_DEB_IBM(N.snail, min.L, max.L, Food, n.ticks, drip))
+summarized_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, drip=T){
+  digest_state(run_DEB_IBM(N.snail, min.L, max.L, Food, drip))
 }
 
 # Gets the mean and 95% CI from a collection of replicated runs
@@ -393,10 +463,10 @@ summarized_IBM_reps = function(data, endpoint){
 
 # Runs replicate simulations with the same conditions; here it is no predators vs. predators
 
-pars["pred_N"] = 1
+pars["pred_N"] = 0
 pars["pred_alpha_Inf"] = 0
 rep_states_NoPred = replicate(n=10, summarized_DEB_IBM(drip=T), simplify=T)
-pars["pred_alpha_Inf"] = 10
+pars["pred_N"] = 10
 rep_states_Pred = replicate(n=10, summarized_DEB_IBM(drip=T), simplify=T)
 
 ```
