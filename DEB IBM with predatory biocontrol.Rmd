@@ -100,13 +100,15 @@ parms["omega"] = 5.5e-9
 
 # Adds parameters for predation
 parms["pred_N"] = 2.5 # predator abundance (so predator density = pred_N/ENV = #/L)
-parms["pred_a"] = 50/parms["ENV"] # predator attack rate; Units = ENVs swept per day, est = 50L swept / day or 8.33 * 6 L tanks (from sokolow etal 2014 acta tropica)
-parms["pred_h"] = 0.1 # pred handling time # 0.1 = 10 snails per day
+parms["pred_eps"] = 1 # relative predator search inefficiency in the wild vs lab
+parms["pred_a"] = 50/225/parms["ENV"]/parms["pred_eps"] # maximum predator attack rate; Units = ENVs swept per day, est = 50L swept / day or 8.33 * 6 L tanks (from sokolow etal 2014 acta tropica; occurs at Prawn-to-snail biomass ratio of 225)
+parms["pred_hm"] = 0.612 # pred handling time as a power-law function of body mass (Sokolow et al. 2014, acta tropica) - intercept
+parms["pred_hg"] = -0.805# pred handling time as a power-law function of body mass (Sokolow et al. 2014, acta tropica) - exponent
 parms["pred_window"] = TRUE # Is size selective predation defined by a vulnerable window (FALSE = continuous size selectivity)
 parms["gape_min"] = 0 # minimum size that can be consumed by predator
 parms["gape_max"] = 1/(3*5) #maximum biomass ratio that can be consumed by predator (from Sokolow et al. 2014, acta tropica and converting our dry-mass estimate to their wet mass estimate ~5-fold diff)
 parms["pred_size_gradient"] = -0.237 # continuous size-selectivity effect (parameterized by Sokolow et al. 2014 acta tropica)
-parms["pred_alpha_Inf"] = 1 # Predator preference to attack infected individuals, must be >= -1 (0 = no preference)
+parms["pred_alpha_Inf"] = 0 # Predator preference to attack infected individuals, must be >= -1 (0 = no preference)
 ```
 
 ```{r DEB_function}
@@ -237,14 +239,17 @@ run_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, drip=T, pars){
       snail.stats[which(Infection.step[1:N.snails] > 0),"P"] = snail.stats[which(Infection.step[1:N.snails] > 0),"P"] + 2.85e-5 
       
       # Determine snail mortality rates due to size- and infection-selective predation
-        # Calculate average biomass of predators
+        # Calculate average biomass of predators Units g WET weight
+        # Note that "AppMass" is the snail's DRY WEIGHT in mg 
           pred_M = 10^(pars["ap"])*(state$Pred_L[tick]/10)^pars["bp"]
+          pred_ht = pars["pred_hm"]*pred_M^pars["pred_hg"]
+        # Prawn-to-snail biomass ratios
+          P_S_ratio = pred_M/(snail.stats[,"Appmass"]*5/1000) # *5/1000 to go from mg DRY to g WET
+          pred_a = pars["pred_a"]*P_S_ratio  
       if(pars["pred_window"] == TRUE){
-         hb = as.numeric(pars["hb"]) + (pars["pred_a"]*(1 + (snail.stats[,"Cercs"]>0)*pars["pred_alpha_Inf"])*state$Pred_N[tick]) / 
-                                  (1 + pars["pred_a"] * pars["pred_h"] * Uninf.snails + 
-                                     pars["pred_a"]*(1 + pars["pred_alpha_Inf"]) * pars["pred_h"] * Inf.snails) *
-                            (snail.stats[,"Appmass"] >= pars["gape_min"]*pred_M & # is the snail "in the window"
-                                snail.stats[,"Appmass"] <= pars["gape_max"]*pred_M)
+         hb = as.numeric(pars["hb"]) + (pred_a*(1 + (snail.stats[,"Cercs"]>0)*pars["pred_alpha_Inf"])*state$Pred_N[tick]) / 
+                                  (1 + pred_a * pred_ht * Uninf.snails + 
+                                     pred_a*(1 + pars["pred_alpha_Inf"]) * pred_ht * Inf.snails)
 
         # hb = as.numeric(pars["hb"]) + (pars["pred_a"]*(1 + (snail.stats[,"Cercs"]>0)*pars["pred_alpha_Inf"]) * state$Pred_N[tick]) / (1 + pars["pred_a"] * pars["pred_h"] * Uninf.snails + pars["pred_a"] *(1 + pars["pred_alpha_Inf"]) * pars["pred_h"] * Inf.snails) * 
         #                                 (snail.stats[,"LG"] >= pars["gape_min"] & snail.stats[,"LG"] <= pars["gape_max"])
@@ -344,7 +349,7 @@ run_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, drip=T, pars){
         state$Snails[[tick+1]] = rbind(state$Snails[[tick+1]], neonates)
       }
     }
-    if(tick %% 25 == 0){print(tick)}
+    if(tick %% 150 == 0){print(tick)}
   }
   return(state)
 }
@@ -399,11 +404,8 @@ cumulative_DEB_IBM = function(N.snail=50, min.L=4, max.L=16, Food=1, drip=T, par
   cumulative_totals(run_DEB_IBM(N.snail, min.L, max.L, Food, drip, pars))
 }
 
-
 Outputs_of_Interest = c("Snails", "DEBmass", "Appmass", "Food", "Miracidia", "Cercariae", "Eggs", "Pred_L", "Pred_N")
 Parameters_of_Interest = c("pred_N", "L0")
-
-
 
 DEBIBM_factorial_simulator = function(OoI, PoI, mins, maxs, levels, iterations, pars=parms){ # Factorial simulator for cumulative totals
   # set up parameter combinations
@@ -430,18 +432,14 @@ DEBIBM_factorial_simulator = function(OoI, PoI, mins, maxs, levels, iterations, 
   
 }
 
-facsim_result = DEBIBM_factorial_simulator(OoI=Outputs_of_Interest, PoI=Parameters_of_Interest, mins = c(0, 40), maxs = c(10, 200), levels = 10, iterations=4)
+facsim_result = DEBIBM_factorial_simulator(OoI=Outputs_of_Interest, PoI=Parameters_of_Interest, mins = c(0, 40), maxs = c(10, 200), levels = 10, iterations=8)
 
 facsim_Summary = aggregate(Cercariae ~ pred_N*L0, FUN=mean, data=facsim_result)
  
 ggplot(data=facsim_Summary, aes(x=pred_N, y=Cercariae, group=as.factor(L0), color=as.factor(L0))) + geom_point() + geom_line()
 # 
-# facsim_Summary2 = aggregate(DEBmass ~ pred_N, FUN=mean, data=facsim_result)
-# 
-# ggplot(data=facsim_Summary2, aes(x=pred_N, y=DEBmass)) + geom_point() 
-
-
-#ggplot(data=facsim_Summary, aes(x=pred_N, y=Cercariae, color=as.factor(gape_max), group=as.factor(gape_max))) + geom_point() 
+facsim_Summary2 = aggregate(Snails ~ pred_N*L0, FUN=mean, data=facsim_result)
+ggplot(data=facsim_Summary2, aes(x=pred_N, y=Snails, group=as.factor(L0), color=as.factor(L0))) + geom_point() + geom_line()
 
 ```
 
@@ -449,8 +447,8 @@ ggplot(data=facsim_Summary, aes(x=pred_N, y=Cercariae, group=as.factor(L0), colo
 
 ```{r replicate_sims, message=FALSE, echo=FALSE}
 # A function suitable for replicate() to handle and return the pop-level summarized output
-summarized_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, drip=T){
-  digest_state(run_DEB_IBM(N.snail, min.L, max.L, Food, drip))
+summarized_DEB_IBM = function(N.snail=60, min.L=2, max.L=16, Food=1, drip=T, pars=parms){
+  digest_state(run_DEB_IBM(N.snail, min.L, max.L, Food, drip, pars=parms))
 }
 
 # Gets the mean and 95% CI from a collection of replicated runs
@@ -463,16 +461,16 @@ summarized_IBM_reps = function(data, endpoint){
 
 # Runs replicate simulations with the same conditions; here it is no predators vs. predators
 
-pars["pred_N"] = 0
-pars["pred_alpha_Inf"] = 0
-rep_states_NoPred = replicate(n=10, summarized_DEB_IBM(drip=T), simplify=T)
-pars["pred_N"] = 10
-rep_states_Pred = replicate(n=10, summarized_DEB_IBM(drip=T), simplify=T)
+parms["pred_N"] = 0
+# pars["pred_alpha_Inf"] = 0
+rep_states_NoPred = replicate(n=3, summarized_DEB_IBM(drip=T), simplify=T)
+parms["pred_N"] = 5
+rep_states_Pred = replicate(n=3, summarized_DEB_IBM(drip=T), simplify=T)
 
 ```
 
 ```{r plotting}
-FigS1A_df = data.frame(rbind(summarized_IBM_reps(rep_states_NoPred, "Snails"), summarized_IBM_reps(rep_states_Pred, "Snails")), "M_in" = rep(c("Constant", "Biweekly pulse"), each=113))
+FigS1A_df = data.frame(rbind(summarized_IBM_reps(rep_states_NoPred, "Snails"), summarized_IBM_reps(rep_states_Pred, "Snails")), "M_in" = rep(c("Constant", "Biweekly pulse"), each=151))
 #### Set up means and CIs for supplemental figure ####
 pS1A = ggplot(data=FigS1A_df, aes(x=time, y=Mean/500, group=M_in, colour=M_in)) +
   xlab(NULL) + ylab(NULL) +
@@ -485,7 +483,7 @@ pS1A = ggplot(data=FigS1A_df, aes(x=time, y=Mean/500, group=M_in, colour=M_in)) 
 
 pS1A
 
-FigS1B_df = data.frame(rbind(summarized_IBM_reps(rep_states_NoPred, "Cercariae"), summarized_IBM_reps(rep_states_Pred, "Cercariae")), "M_in" = rep(c("constant", "biweekly pulse"), each=113))
+FigS1B_df = data.frame(rbind(summarized_IBM_reps(rep_states_NoPred, "Cercariae"), summarized_IBM_reps(rep_states_Pred, "Cercariae")), "M_in" = rep(c("constant", "biweekly pulse"), each=151))
 #### Set up means and CIs for supplemental figure ####
 pS1B = ggplot(data=FigS1B_df, aes(x=time, y=Mean, group=M_in, colour=M_in)) +
   xlab(NULL) + ylab(NULL) +
@@ -497,7 +495,7 @@ pS1B = ggplot(data=FigS1B_df, aes(x=time, y=Mean, group=M_in, colour=M_in)) +
 
 pS1B
 
-FigS1C_df = data.frame(rbind(summarized_IBM_reps(rep_states_NoPred, "Food"), summarized_IBM_reps(rep_states_Pred, "Food")), "M_in" = rep(c("constant", "biweekly pulse"), each=113))
+FigS1C_df = data.frame(rbind(summarized_IBM_reps(rep_states_NoPred, "Food"), summarized_IBM_reps(rep_states_Pred, "Food")), "M_in" = rep(c("constant", "biweekly pulse"), each=151))
 #### Set up means and CIs for supplemental figure ####
 pS1C = ggplot(data=FigS1C_df, aes(x=time, y=Mean, group=M_in, colour=M_in)) +
   xlab(NULL) + ylab(NULL) +
@@ -509,7 +507,7 @@ pS1C = ggplot(data=FigS1C_df, aes(x=time, y=Mean, group=M_in, colour=M_in)) +
 
 pS1C
 
-FigS1D_df = data.frame(rbind(summarized_IBM_reps(rep_states_NoPred, "Miracidia"), summarized_IBM_reps(rep_states_Pred, "Miracidia")), "M_in" = rep(c("constant", "biweekly pulse"), each=113))
+FigS1D_df = data.frame(rbind(summarized_IBM_reps(rep_states_NoPred, "Miracidia"), summarized_IBM_reps(rep_states_Pred, "Miracidia")), "M_in" = rep(c("constant", "biweekly pulse"), each=151))
 #### Set up means and CIs for supplemental figure ####
 pS1D = ggplot(data=FigS1D_df, aes(x=time, y=Mean/500, group=M_in, colour=M_in)) +
   xlab(NULL) + ylab(NULL) +
